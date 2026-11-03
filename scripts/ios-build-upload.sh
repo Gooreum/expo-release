@@ -13,6 +13,9 @@ cd "$(git rev-parse --show-toplevel)"
 HERE="$(dirname "$0")"
 . "$HERE/lib.sh"
 export_env
+# 빌드 중 expo-updates가 fingerprint를 다시 계산하면 네이티브 디렉터리·빌드 환경 때문에 값이 달라진다.
+# EAS Build처럼 계획 단계에서 잰 hash(= eas update가 쓰는 값)를 그대로 박는다.
+[ -n "${FINGERPRINT:-}" ] && export EXPO_UPDATES_FINGERPRINT_OVERRIDE="$FINGERPRINT"
 
 BUNDLE_ID=$(cfg ios.bundle_id); TEAM_ID=$(cfg ios.team_id)
 ARCHIVE=build/expo-release/ios/App.xcarchive
