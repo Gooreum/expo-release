@@ -16,7 +16,8 @@
     "enabled": true,
     "bundle_id": "com.example.app",
     "team_id": "ABCDE12345",
-    "runner": "macos-26",
+    "runner": "macos-15",
+    "xcode": "26",
     "verify": ""
   },
   "android": {

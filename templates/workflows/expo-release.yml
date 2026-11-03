@@ -162,6 +162,10 @@ jobs:
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_KEY_PATH: ${{ github.workspace }}/../AuthKey.p8
       ACT: ${{ needs.plan.outputs.ios }}
+      # C++(React Native·Hermes·네이티브 모듈) 컴파일 결과를 실행 사이에 재사용한다.
+      # Podfile이 USE_CCACHE=1을 보고 ccache를 켠다 — 앱 설정을 안 바꾸니 fingerprint도 그대로다.
+      USE_CCACHE: '1'
+      CCACHE_DIR: /Users/runner/.ccache   # 호스티드 macOS 러너의 홈
     steps:
       - uses: actions/checkout@v5
         with:
@@ -170,6 +174,29 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Xcode 고르기
+        # 설정 ios.xcode(예: "26")와 맞는 설치본 중 최신을 고른다. 비우면 러너 기본값.
+        run: |
+          . scripts/expo-release/lib.sh; want=$(cfg ios.xcode)
+          if [ -n "$want" ]; then
+            # 베타·RC로 빌드하면 App Store가 업로드를 거부한다
+            app=$(printf '%s\n' /Applications/Xcode_"$want"*.app | grep -viE 'beta|release_candidate|\*' | sort -V | tail -1 || true)
+            [ -n "$app" ] || { echo "::error::Xcode $want가 이 러너에 없다"; exit 1; }
+            sudo xcode-select -s "$app"
+          fi
+          xcodebuild -version
+          command -v ccache >/dev/null || brew install ccache
+      - name: ccache·CocoaPods 캐시
+        uses: actions/cache@v4
+        with:
+          path: |
+            /Users/runner/.ccache
+            ~/Library/Caches/CocoaPods
+          # ccache는 매번 새로 저장해야 쌓인다 — 커밋마다 키를 바꾸고 직전 것을 복원한다
+          key: ios-build-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
+          restore-keys: |
+            ios-build-${{ hashFiles('package-lock.json') }}-
+            ios-build-
       - name: API 키
         env:
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
