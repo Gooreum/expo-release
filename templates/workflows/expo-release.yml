@@ -1,0 +1,293 @@
+# Expo 앱 릴리스 — 스토어 빌드(iOS·Android)와 OTA 업데이트(EAS Update).
+#
+# 릴리스 커밋은 expo-release 스킬이 만든다. 일반 머지는 아래 경로를 건드리지 않으므로 돌지 않는다.
+#
+#   app.json의 ios.buildNumber 바뀜     → iOS 아카이브·업로드 → 태그 ios-v<버전>-<빌드>
+#   app.json의 android.versionCode 바뀜 → AAB 빌드·Play 업로드 → 태그 android-v<버전>-<코드>
+#   fastlane/metadata·screenshots 바뀜  → App Store 앱 정보·스크린샷
+#   fastlane/android 바뀜               → Play 앱 정보·스크린샷
+#   수동 실행 update=true               → EAS Update (네이티브가 그대로일 때만)
+#
+# 태그 메시지에 fingerprint=<hash>를 남긴다. OTA는 이 값과 지금 값이 같을 때만 보낸다.
+#
+# 시크릿
+#   iOS:     ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8(.p8을 base64) — 키 권한 Admin
+#   Android: PLAY_SERVICE_ACCOUNT_JSON_B64, ANDROID_KEYSTORE_B64, ANDROID_KEYSTORE_PASSWORD,
+#            ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+#   OTA:     EXPO_TOKEN
+#   ci.setup이 쓰는 프로젝트 비밀(.env.production 등)은 그 스크립트가 정한 이름으로
+name: Expo Release
+
+on:
+  push:
+    branches: [__BRANCH__]
+    paths:
+      - app.json
+      - fastlane/**
+  workflow_dispatch:
+    inputs:
+      ios:
+        description: iOS 아카이브·업로드
+        type: boolean
+        default: false
+      android:
+        description: Android AAB 빌드·업로드
+        type: boolean
+        default: false
+      metadata:
+        description: 앱 정보 반영 (두 스토어)
+        type: boolean
+        default: false
+      screenshots:
+        description: App Store 스크린샷 교체
+        type: boolean
+        default: false
+      cancel_review:
+        description: App Store 심사 대기 중이면 철회하고 반영한 뒤 다시 제출 (심사 순서를 잃는다)
+        type: boolean
+        default: false
+      update:
+        description: OTA 업데이트 (EAS Update)
+        type: boolean
+        default: false
+      update_platforms:
+        description: OTA 플랫폼 (공백 구분, 비우면 전부)
+        type: string
+        default: ""
+      message:
+        description: OTA 업데이트 메시지
+        type: string
+        default: ""
+      dry_run:
+        description: 올리지 않고 서명까지만 (iOS·Android)
+        type: boolean
+        default: false
+
+# 두 릴리스가 동시에 올라가면 번호·앱 정보가 엇갈린다. 앞의 것을 끝까지 둔다.
+concurrency:
+  group: expo-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      ios: ${{ steps.p.outputs.ios }}
+      android: ${{ steps.p.outputs.android }}
+      ios_meta: ${{ steps.p.outputs.ios_meta }}
+      ios_screenshots: ${{ steps.p.outputs.ios_screenshots }}
+      android_meta: ${{ steps.p.outputs.android_meta }}
+      update: ${{ steps.p.outputs.update }}
+      version: ${{ steps.p.outputs.version }}
+      ios_build_number: ${{ steps.p.outputs.ios_build_number }}
+      android_version_code: ${{ steps.p.outputs.android_version_code }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: p
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            d=$(bash scripts/expo-release/release-diff.sh HEAD HEAD)
+            echo "$d" | grep -E '^(version|ios_build_number|android_version_code)='
+            echo "ios=${{ inputs.ios }}"
+            echo "android=${{ inputs.android }}"
+            echo "ios_meta=$([ '${{ inputs.metadata }}' = true ] || [ '${{ inputs.screenshots }}' = true ] && echo true || echo false)"
+            echo "ios_screenshots=${{ inputs.screenshots }}"
+            echo "android_meta=${{ inputs.metadata }}"
+            echo "update=${{ inputs.update }}"
+          else
+            # 브랜치를 새로 만든 푸시면 before가 0으로 온다
+            base="$BEFORE"; git cat-file -e "$base^{commit}" 2>/dev/null || base=HEAD~1
+            d=$(bash scripts/expo-release/release-diff.sh "$base" HEAD)
+            get() { echo "$d" | sed -n "s/^$1=//p"; }
+            echo "$d" | grep -E '^(version|ios_build_number|android_version_code)='
+            echo "ios=$(get ios_build)"
+            echo "android=$(get android_build)"
+            echo "ios_meta=$([ "$(get ios_metadata)" = true ] || [ "$(get ios_screenshots)" = true ] && echo true || echo false)"
+            echo "ios_screenshots=$(get ios_screenshots)"
+            echo "android_meta=$(get android_metadata)"
+            echo "update=false"
+          fi | tee -a "$GITHUB_OUTPUT"
+          # 꺼진 플랫폼은 건너뛴다
+          for p in ios android; do
+            on=$(python3 -c "import json;print(str(json.load(open('.expo-release.json')).get('$p',{}).get('enabled',False)).lower())")
+            [ "$on" = true ] || { echo "$p=false" >> "$GITHUB_OUTPUT"; echo "${p}_meta=false" >> "$GITHUB_OUTPUT"; }
+          done
+
+  ios:
+    needs: plan
+    if: needs.plan.outputs.ios == 'true' || needs.plan.outputs.ios_meta == 'true'
+    runs-on: __RUNNER__
+    timeout-minutes: 75
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_PATH: ${{ github.workspace }}/../AuthKey.p8
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: API 키
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          [ -n "$ASC_KEY_P8" ] && [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] \
+            || { echo "::error::시크릿 ASC_KEY_P8·ASC_KEY_ID·ASC_ISSUER_ID가 필요하다"; exit 1; }
+          echo "$ASC_KEY_P8" | base64 --decode > "$ASC_KEY_PATH"; chmod 600 "$ASC_KEY_PATH"
+      - name: 준비
+        env:
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: |
+          . scripts/expo-release/lib.sh
+          export_secrets
+          setup=$(cfg ci.setup)
+          if [ -n "$setup" ]; then bash -c "$setup"; else npm ci; fi
+      - name: fingerprint
+        id: fp
+        if: needs.plan.outputs.ios == 'true'
+        # prebuild 전에 잰다 — OTA 쪽(prebuild 없음)과 같은 조건이어야 같은 값이 나온다
+        run: echo "hash=$(bash scripts/expo-release/fingerprint.sh hash ios)" | tee -a "$GITHUB_OUTPUT"
+      - name: 아카이브·업로드
+        if: needs.plan.outputs.ios == 'true'
+        env:
+          DESTINATION: ${{ inputs.dry_run && 'export' || 'upload' }}
+        run: |
+          xcodebuild -version
+          bash scripts/expo-release/ios-build-upload.sh
+      - name: 앱 정보·스크린샷
+        if: needs.plan.outputs.ios_meta == 'true'
+        run: |
+          command -v fastlane >/dev/null || brew install fastlane
+          fastlane ios metadata screenshots:${{ needs.plan.outputs.ios_screenshots }} \
+            version:${{ needs.plan.outputs.version }} cancel_review:${{ inputs.cancel_review || false }}
+      - name: 태그
+        if: needs.plan.outputs.ios == 'true' && !inputs.dry_run
+        run: |
+          tag="ios-v${{ needs.plan.outputs.version }}-${{ needs.plan.outputs.ios_build_number }}"
+          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
+            tag -a "$tag" -m "fingerprint=${{ steps.fp.outputs.hash }}"
+          git push origin "$tag"
+      - name: 키·비밀 파일 지우기
+        if: always()
+        run: |
+          rm -f "$ASC_KEY_PATH"
+          . scripts/expo-release/lib.sh; c=$(cfg ci.cleanup); [ -z "$c" ] || bash -c "$c"
+
+  android:
+    needs: plan
+    if: needs.plan.outputs.android == 'true' || needs.plan.outputs.android_meta == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PLAY_JSON_KEY_PATH: ${{ github.workspace }}/../play.json
+      ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/../upload.keystore
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 17
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+      - name: 키
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON_B64 }}
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          [ -n "$PLAY_SERVICE_ACCOUNT_JSON_B64" ] || { echo "::error::시크릿 PLAY_SERVICE_ACCOUNT_JSON_B64가 필요하다"; exit 1; }
+          echo "$PLAY_SERVICE_ACCOUNT_JSON_B64" | base64 --decode > "$PLAY_JSON_KEY_PATH"; chmod 600 "$PLAY_JSON_KEY_PATH"
+          if [ "${{ needs.plan.outputs.android }}" = true ]; then
+            [ -n "$ANDROID_KEYSTORE_B64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ] \
+              || { echo "::error::시크릿 ANDROID_KEYSTORE_B64·ANDROID_KEYSTORE_PASSWORD·ANDROID_KEY_ALIAS·ANDROID_KEY_PASSWORD가 필요하다"; exit 1; }
+            echo "$ANDROID_KEYSTORE_B64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"; chmod 600 "$ANDROID_KEYSTORE_PATH"
+          fi
+      - name: 준비
+        env:
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: |
+          . scripts/expo-release/lib.sh
+          export_secrets
+          setup=$(cfg ci.setup)
+          if [ -n "$setup" ]; then bash -c "$setup"; else npm ci; fi
+          gem install fastlane --no-document
+      - name: fingerprint
+        id: fp
+        if: needs.plan.outputs.android == 'true'
+        run: echo "hash=$(bash scripts/expo-release/fingerprint.sh hash android)" | tee -a "$GITHUB_OUTPUT"
+      - name: AAB 빌드
+        if: needs.plan.outputs.android == 'true'
+        run: bash scripts/expo-release/android-build.sh
+      - name: Play 업로드
+        if: (needs.plan.outputs.android == 'true' && !inputs.dry_run) || needs.plan.outputs.android_meta == 'true'
+        run: |
+          aab=""
+          if [ "${{ needs.plan.outputs.android }}" = true ] && [ "${{ inputs.dry_run || false }}" != true ]; then
+            aab=build/expo-release/android/app-release.aab
+          fi
+          fastlane android upload aab:"$aab" metadata:${{ needs.plan.outputs.android_meta }}
+      - name: 태그
+        if: needs.plan.outputs.android == 'true' && !inputs.dry_run
+        run: |
+          tag="android-v${{ needs.plan.outputs.version }}-${{ needs.plan.outputs.android_version_code }}"
+          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
+            tag -a "$tag" -m "fingerprint=${{ steps.fp.outputs.hash }}"
+          git push origin "$tag"
+      - name: 키·비밀 파일 지우기
+        if: always()
+        run: |
+          rm -f "$PLAY_JSON_KEY_PATH" "$ANDROID_KEYSTORE_PATH"
+          . scripts/expo-release/lib.sh; c=$(cfg ci.cleanup); [ -z "$c" ] || bash -c "$c"
+
+  update:
+    needs: plan
+    if: needs.plan.outputs.update == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: 준비
+        env:
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: |
+          [ -n "$EXPO_TOKEN" ] || { echo "::error::시크릿 EXPO_TOKEN이 필요하다"; exit 1; }
+          . scripts/expo-release/lib.sh
+          export_secrets
+          setup=$(cfg ci.setup)
+          if [ -n "$setup" ]; then bash -c "$setup"; else npm ci; fi
+      - name: EAS Update
+        env:
+          MESSAGE: ${{ inputs.message }}
+        run: |
+          [ -n "$MESSAGE" ] || { echo "::error::message가 필요하다"; exit 1; }
+          bash scripts/expo-release/update.sh "$MESSAGE" ${{ inputs.update_platforms }}
+      - name: 비밀 파일 지우기
+        if: always()
+        run: . scripts/expo-release/lib.sh; c=$(cfg ci.cleanup); [ -z "$c" ] || bash -c "$c"

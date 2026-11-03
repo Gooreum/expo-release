@@ -1,0 +1,41 @@
+{
+  "branch": "main",
+  "app_config": "app.json",
+  "env": { "APP_ENV": "prod", "NODE_ENV": "production" },
+  "ci": {
+    "setup": "bash scripts/expo-release/ci-setup.sh",
+    "cleanup": "rm -f .env.production GoogleService-Info.prod.plist google-services.prod.json",
+    "secrets": ["ENV_PRODUCTION_B64", "GOOGLE_SERVICE_INFO_PROD_B64", "GOOGLE_SERVICES_PROD_JSON_B64"]
+  },
+  "ios": {
+    "enabled": true,
+    "bundle_id": "com.example.app",
+    "team_id": "ABCDE12345",
+    "runner": "macos-26",
+    "verify": ""
+  },
+  "android": {
+    "enabled": true,
+    "package": "com.example.app",
+    "track": "production",
+    "release_status": "completed",
+    "signing_props": {
+      "store_file": "UPLOAD_STORE_FILE",
+      "store_password": "UPLOAD_STORE_PASSWORD",
+      "key_alias": "UPLOAD_KEY_ALIAS",
+      "key_password": "UPLOAD_KEY_PASSWORD"
+    },
+    "verify": ""
+  },
+  "update": {
+    "enabled": true,
+    "channel": "production",
+    "eas_cli": "eas-cli@latest"
+  },
+  "screenshots": {
+    "scenes": [{ "id": "home", "label": "홈" }],
+    "capture": "",
+    "compose": "",
+    "composer": "codex"
+  }
+}
