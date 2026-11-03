@@ -43,6 +43,7 @@ case "${1:-}" in
     # lockfile과 어긋난 node_modules가 hash를 바꾸기 때문이다 — CI와 같은 값을 보려면 이걸 쓴다.
     # 앱 설정을 읽는 데 필요한 gitignore 파일(.env.production 등)은 설정 local_files로 복사한다.
     if [ "${2:-}" = --clean ]; then
+      HERE_ABS=$(cd "$(dirname "$0")" && pwd)   # 이 스크립트 — worktree에 아직 커밋 안 됐어도 돈다
       wt=$(mktemp -d)/wt
       git worktree add -q --detach "$wt" HEAD
       trap 'git worktree remove --force "$wt" >/dev/null 2>&1 || true' EXIT
@@ -51,7 +52,7 @@ case "${1:-}" in
       done
       cp "$CONFIG" "$wt/.expo-release.json"
       (cd "$wt" && npm ci --silent >/dev/null 2>&1) || { echo "npm ci 실패" >&2; exit 1; }
-      (cd "$wt" && EXPO_RELEASE_CONFIG=.expo-release.json bash "$wt/scripts/expo-release/fingerprint.sh" check)
+      (cd "$wt" && EXPO_RELEASE_CONFIG=.expo-release.json bash "$HERE_ABS/fingerprint.sh" check)
       exit
     fi
     out=()
