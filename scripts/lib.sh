@@ -41,7 +41,16 @@ PY
 
 # 설정의 env(예: APP_ENV=prod, NODE_ENV=production)를 내보낸다. 빌드·fingerprint·OTA가
 # 모두 같은 환경으로 앱 설정을 읽어야 같은 runtime version이 나온다.
+#
+# env_files(예: .env.production)도 셸 환경으로 읽는다. eas-cli는 앱 설정을 dotenv 없이
+# 평가하므로(EXPO_NO_DOTENV), .env에만 있는 값을 app.config가 요구하면 eas update가 실패한다.
+# 먼저 내보내 두면 eas·expo-updates 빌드 단계·fingerprint가 모두 같은 설정을 본다.
 export_env() {
+  local f
+  for f in $(python3 -c "import json,sys;print(' '.join(json.load(open(sys.argv[1])).get('env_files',[])))" "$CONFIG"); do
+    [ -f "$f" ] || { echo "env_files의 $f가 없다" >&2; return 1; }
+    set -a; . "./$f"; set +a
+  done
   eval "$(python3 - "$CONFIG" <<'PY'
 import json, shlex, sys
 for k, v in json.load(open(sys.argv[1])).get("env", {}).items():

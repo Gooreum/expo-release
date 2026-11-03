@@ -2,6 +2,7 @@
   "branch": "main",
   "app_config": "app.json",
   "env": { "APP_ENV": "prod", "NODE_ENV": "production" },
+  "env_files": [".env.production"],
   "ci": {
     "setup": "bash scripts/expo-release/ci-setup.sh",
     "cleanup": "rm -f .env.production GoogleService-Info.prod.plist google-services.prod.json",
