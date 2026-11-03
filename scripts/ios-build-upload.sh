@@ -46,6 +46,13 @@ echo "archive: $bid $av ($ab)"
 [ "$bid" = "$BUNDLE_ID" ] || { echo "번들 ID $bid ≠ 설정 $BUNDLE_ID" >&2; exit 1; }
 [ "$av" = "$VERSION" ] && [ "$ab" = "$BUILD" ] || { echo "아카이브 버전 $av ($ab) ≠ app.json $VERSION ($BUILD)" >&2; exit 1; }
 
+# 빌드에 박힌 runtimeVersion이 태그에 남길 fingerprint와 같은지. 다르면 OTA가 이 빌드에 조용히 안 내려간다.
+if [ -n "${FINGERPRINT:-}" ] && [ -f "$APP/EXUpdates.bundle/app.manifest" ]; then
+  rv=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("runtimeVersion",""))' "$APP/EXUpdates.bundle/app.manifest")
+  echo "runtimeVersion $rv"
+  [ "$rv" = "$FINGERPRINT" ] || { echo "빌드 runtimeVersion $rv ≠ fingerprint $FINGERPRINT — 올리지 않는다" >&2; exit 1; }
+fi
+
 # 프로젝트별 검사 (예: JS 번들에 인라인된 백엔드가 prod인지). APP_PATH·BUNDLE_PATH를 넘긴다.
 verify=$(cfg ios.verify)
 if [ -n "$verify" ]; then

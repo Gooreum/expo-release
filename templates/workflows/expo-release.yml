@@ -207,6 +207,7 @@ jobs:
         if: env.ACT != 'none'
         env:
           DESTINATION: ${{ inputs.dry_run && 'export' || 'upload' }}
+          FINGERPRINT: ${{ steps.fp.outputs.hash }}
         run: |
           xcodebuild -version
           bash scripts/expo-release/ios-build-upload.sh
@@ -291,6 +292,8 @@ jobs:
           echo "tag=android-v$v-$c" | tee -a "$GITHUB_OUTPUT"
       - name: AAB 빌드
         if: env.ACT != 'none'
+        env:
+          FINGERPRINT: ${{ steps.fp.outputs.hash }}
         run: bash scripts/expo-release/android-build.sh
       - name: Play 업로드
         if: (env.ACT != 'none' && !inputs.dry_run) || needs.plan.outputs.android_meta == 'true'
