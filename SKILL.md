@@ -67,6 +67,8 @@ ls .app-store-release.json fastlane .github/workflows 2>/dev/null   # app-store-
 - 버전 위치: `app.json`의 `expo.version`·`expo.ios.buildNumber`·`expo.android.versionCode`. `app.config.*`가 덮어쓰면 멈추고 말한다(이 스킬은 app.json만 고친다).
 - `ios/`·`android/`가 추적되면(bare) 이 스킬의 prebuild 단계와 맞지 않는다 — 멈추고 말한다.
 - Android 서명 plugin: release 서명을 넣는 config plugin이 있으면 그 Gradle 속성 이름을 `android.signing_props`에 쓴다. 없으면 `templates/plugins/withReleaseSigning.js`를 깐다.
+- **app.config가 `.env`에만 있는 값을 요구하면** (예: 없으면 throw) expo-updates 빌드 단계·`@expo/fingerprint`·eas-cli가 설정을 못 읽고 빌드가 깨진다 — 이 경로들은 Expo CLI가 아니라 `.env`를 안 읽는다.
+  app.config 맨 앞에서 `require('@expo/env').load(projectRoot, { silent: true })`로 직접 읽게 고치고(`@expo/env`를 devDependency로), `.expo-release.json`의 `env_files`에도 적는다.
 - CI에 필요한 비밀 파일(.env.production, GoogleService 파일 등): gitignore돼 있으면 base64 시크릿에서 복원하는 `ci.setup` 스크립트가 필요하다. 이름을 `ci.secrets`에 적는다.
 - `app-store-release`가 이미 깔려 있으면 **옮겨 온다**: `fastlane/metadata`·`fastlane/screenshots`는 그대로 쓰고, 기존 워크플로·스크립트는 새 것과 겹치므로 지울지 묻는다(4번 탭). 기존 태그 `v<버전>-<빌드>`는 iOS 빌드 기록이다.
 
