@@ -49,9 +49,10 @@ fi
 grep -m1 "SHA1:" <<<"$certs" | sed 's/^\s*/업로드 키 /'
 
 # 빌드에 박힌 runtimeVersion이 태그에 남길 fingerprint와 같은지. 다르면 OTA가 이 빌드에 조용히 안 내려간다.
-if [ -n "${FINGERPRINT:-}" ] && unzip -l "$AAB" base/assets/app.manifest >/dev/null 2>&1; then
-  rv=$(unzip -p "$AAB" base/assets/app.manifest | python3 -c 'import json,sys;print(json.load(sys.stdin).get("runtimeVersion",""))')
-  echo "runtimeVersion $rv"
+# policy "fingerprint"면 expo-updates가 assets/fingerprint 파일에 hash를 넣는다(app.manifest엔 runtimeVersion이 없다).
+if [ -n "${FINGERPRINT:-}" ]; then
+  rv=$(unzip -p "$AAB" base/assets/fingerprint 2>/dev/null || true)
+  echo "runtimeVersion ${rv:-없음}"
   [ "$rv" = "$FINGERPRINT" ] || { echo "빌드 runtimeVersion $rv ≠ fingerprint $FINGERPRINT — 올리지 않는다" >&2; exit 1; }
 fi
 

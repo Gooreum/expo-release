@@ -47,9 +47,10 @@ echo "archive: $bid $av ($ab)"
 [ "$av" = "$VERSION" ] && [ "$ab" = "$BUILD" ] || { echo "아카이브 버전 $av ($ab) ≠ app.json $VERSION ($BUILD)" >&2; exit 1; }
 
 # 빌드에 박힌 runtimeVersion이 태그에 남길 fingerprint와 같은지. 다르면 OTA가 이 빌드에 조용히 안 내려간다.
-if [ -n "${FINGERPRINT:-}" ] && [ -f "$APP/EXUpdates.bundle/app.manifest" ]; then
-  rv=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("runtimeVersion",""))' "$APP/EXUpdates.bundle/app.manifest")
-  echo "runtimeVersion $rv"
+# policy "fingerprint"면 expo-updates가 EXUpdates.bundle/fingerprint 파일에 hash를 넣는다(app.manifest엔 runtimeVersion이 없다).
+if [ -n "${FINGERPRINT:-}" ]; then
+  rv=$(cat "$APP/EXUpdates.bundle/fingerprint" 2>/dev/null || true)
+  echo "runtimeVersion ${rv:-없음}"
   [ "$rv" = "$FINGERPRINT" ] || { echo "빌드 runtimeVersion $rv ≠ fingerprint $FINGERPRINT — 올리지 않는다" >&2; exit 1; }
 fi
 
