@@ -4,7 +4,7 @@
 #
 #   bash scripts/expo-release/fingerprint.sh hash <ios|android>   지금 작업 트리의 hash
 #   bash scripts/expo-release/fingerprint.sh last <ios|android>   마지막 스토어 빌드의 hash (태그에서)
-#   bash scripts/expo-release/fingerprint.sh check                 ios=same|changed|none android=…
+#   bash scripts/expo-release/fingerprint.sh check [--clean]       ios=same|changed|none android=…
 #
 # 스토어 빌드를 올릴 때 CI가 태그 `<플랫폼>-v<버전>-<빌드>`를 annotated 태그로 찍고
 # 메시지에 `fingerprint=<hash>`를 남긴다. 그 hash와 지금 hash가 같으면 네이티브가 그대로라
@@ -39,6 +39,21 @@ case "${1:-}" in
   hash) hash "${2:?ios|android}" ;;
   last) last "${2:?ios|android}" ;;
   check)
+    # --clean: 커밋된 HEAD만으로 잰다(임시 worktree + npm ci). 로컬 작업 트리의 커밋 안 한 수정·
+    # lockfile과 어긋난 node_modules가 hash를 바꾸기 때문이다 — CI와 같은 값을 보려면 이걸 쓴다.
+    # 앱 설정을 읽는 데 필요한 gitignore 파일(.env.production 등)은 설정 local_files로 복사한다.
+    if [ "${2:-}" = --clean ]; then
+      wt=$(mktemp -d)/wt
+      git worktree add -q --detach "$wt" HEAD
+      trap 'git worktree remove --force "$wt" >/dev/null 2>&1 || true' EXIT
+      for f in $(python3 -c "import json;print(' '.join(json.load(open('$CONFIG')).get('local_files',[])))"); do
+        [ -e "$f" ] && cp "$f" "$wt/$f"
+      done
+      cp "$CONFIG" "$wt/.expo-release.json"
+      (cd "$wt" && npm ci --silent >/dev/null 2>&1) || { echo "npm ci 실패" >&2; exit 1; }
+      (cd "$wt" && EXPO_RELEASE_CONFIG=.expo-release.json bash "$wt/scripts/expo-release/fingerprint.sh" check)
+      exit
+    fi
     out=()
     for p in ios android; do
       [ "$(cfg $p.enabled)" = true ] || continue

@@ -1,37 +1,39 @@
-# Expo 앱 릴리스 — 스토어 빌드(iOS·Android)와 OTA 업데이트(EAS Update).
+# Expo 앱 릴리스 — main 머지 자동 배포 + 스토어 출시.
 #
-# 릴리스 커밋은 expo-release 스킬이 만든다. 일반 머지는 아래 경로를 건드리지 않으므로 돌지 않는다.
+# main에 머지될 때마다 플랫폼별로 판정한다 (scripts/expo-release/auto-plan.sh):
+#   앱 파일 변경 없음(문서·테스트·CI만)          → 아무것도 안 함
+#   JS만 바뀜 (fingerprint = 마지막 스토어 빌드)  → EAS Update(OTA) — 깔린 앱이 바로 받는다
+#   네이티브 바뀜 / 스토어 빌드 기록 없음        → 스토어용 빌드 업로드 (iOS TestFlight,
+#                                                  Android auto.android_track). 심사 제출은 안 한다.
 #
-#   app.json의 ios.buildNumber 바뀜     → iOS 아카이브·업로드 → 태그 ios-v<버전>-<빌드>
-#   app.json의 android.versionCode 바뀜 → AAB 빌드·Play 업로드 → 태그 android-v<버전>-<코드>
-#   fastlane/metadata·screenshots 바뀜  → App Store 앱 정보·스크린샷
-#   fastlane/android 바뀜               → Play 앱 정보·스크린샷
-#   수동 실행 update=true               → EAS Update (네이티브가 그대로일 때만)
+# 릴리스 커밋(expo-release 스킬이 app.json 빌드 번호를 올린 커밋)은 스토어 출시로 처리한다:
+#   app.json ios.buildNumber 바뀜     → iOS 업로드 (심사 제출은 사람이 ASC에서)
+#   app.json android.versionCode 바뀜 → Play android.track에 android.release_status로 업로드
+#   fastlane/metadata·screenshots    → App Store 앱 정보·스크린샷
+#   fastlane/android                 → Play 앱 정보·스크린샷
 #
-# 태그 메시지에 fingerprint=<hash>를 남긴다. OTA는 이 값과 지금 값이 같을 때만 보낸다.
+# 스토어 빌드가 올라가면 태그 <플랫폼>-v<버전>-<빌드>를 찍고 메시지에 fingerprint=<hash>를 남긴다.
+# 자동 빌드는 app.json을 커밋하지 않는다 — 빌드 번호는 태그가 기록이다(version.sh next).
 #
 # 시크릿
 #   iOS:     ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8(.p8을 base64) — 키 권한 Admin
 #   Android: PLAY_SERVICE_ACCOUNT_JSON_B64, ANDROID_KEYSTORE_B64, ANDROID_KEYSTORE_PASSWORD,
 #            ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
 #   OTA:     EXPO_TOKEN
-#   ci.setup이 쓰는 프로젝트 비밀(.env.production 등)은 그 스크립트가 정한 이름으로
+#   설정 ci.secrets에 적은 프로젝트 비밀(.env.production 등) — ci.setup이 파일로 복원한다
 name: Expo Release
 
 on:
   push:
     branches: [__BRANCH__]
-    paths:
-      - app.json
-      - fastlane/**
   workflow_dispatch:
     inputs:
       ios:
-        description: iOS 아카이브·업로드
+        description: iOS 업로드 (app.json 번호 그대로 — 릴리스)
         type: boolean
         default: false
       android:
-        description: Android AAB 빌드·업로드
+        description: Android 업로드 (app.json 번호 그대로 — 릴리스)
         type: boolean
         default: false
       metadata:
@@ -80,55 +82,86 @@ jobs:
       ios_meta: ${{ steps.p.outputs.ios_meta }}
       ios_screenshots: ${{ steps.p.outputs.ios_screenshots }}
       android_meta: ${{ steps.p.outputs.android_meta }}
-      update: ${{ steps.p.outputs.update }}
-      version: ${{ steps.p.outputs.version }}
-      ios_build_number: ${{ steps.p.outputs.ios_build_number }}
-      android_version_code: ${{ steps.p.outputs.android_version_code }}
+      ota: ${{ steps.p.outputs.ota }}
+      message: ${{ steps.p.outputs.message }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@v4
+        if: github.event_name == 'push'
+        with:
+          node-version: 24
+          cache: npm
+      - name: 준비 (fingerprint용)
+        if: github.event_name == 'push'
+        env:
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: |
+          . scripts/expo-release/lib.sh
+          export_secrets
+          setup=$(cfg ci.setup)
+          if [ -n "$setup" ]; then bash -c "$setup"; else npm ci; fi
       - id: p
         env:
           BEFORE: ${{ github.event.before }}
+          IN_MESSAGE: ${{ inputs.message }}
+          IN_PLATFORMS: ${{ inputs.update_platforms }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
+          # ios·android: release(app.json 번호로 출시) | auto(번호를 태그에서 이어 받아 테스트 업로드) | none
           if [ "${{ github.event_name }}" = workflow_dispatch ]; then
-            d=$(bash scripts/expo-release/release-diff.sh HEAD HEAD)
-            echo "$d" | grep -E '^(version|ios_build_number|android_version_code)='
-            echo "ios=${{ inputs.ios }}"
-            echo "android=${{ inputs.android }}"
+            echo "ios=$([ '${{ inputs.ios }}' = true ] && echo release || echo none)"
+            echo "android=$([ '${{ inputs.android }}' = true ] && echo release || echo none)"
             echo "ios_meta=$([ '${{ inputs.metadata }}' = true ] || [ '${{ inputs.screenshots }}' = true ] && echo true || echo false)"
             echo "ios_screenshots=${{ inputs.screenshots }}"
             echo "android_meta=${{ inputs.metadata }}"
-            echo "update=${{ inputs.update }}"
+            if [ '${{ inputs.update }}' = true ]; then echo "ota=${IN_PLATFORMS:-all}"; else echo "ota="; fi
+            echo "message=$IN_MESSAGE"
+          elif grep -qF '[skip release]' <<<"$HEAD_MESSAGE"; then
+            echo "::notice::[skip release] — 배포하지 않는다" >&2
+            printf '%s\n' ios=none android=none ota= message= ios_meta=false ios_screenshots=false android_meta=false
           else
             # 브랜치를 새로 만든 푸시면 before가 0으로 온다
             base="$BEFORE"; git cat-file -e "$base^{commit}" 2>/dev/null || base=HEAD~1
             d=$(bash scripts/expo-release/release-diff.sh "$base" HEAD)
-            get() { echo "$d" | sed -n "s/^$1=//p"; }
-            echo "$d" | grep -E '^(version|ios_build_number|android_version_code)='
-            echo "ios=$(get ios_build)"
-            echo "android=$(get android_build)"
+            a=$(bash scripts/expo-release/auto-plan.sh "$base" HEAD)
+            get() { printf '%s\n%s\n' "$d" "$a" | sed -n "s/^$1=//p" | head -1; }
+            ota=""
+            # 릴리스 커밋(빌드 번호를 올린 커밋)은 출시만 한다 — 자동 빌드·OTA를 섞지 않는다
+            release=$([ "$(get ios_build)" = true ] || [ "$(get android_build)" = true ] && echo true || echo false)
+            for p in ios android; do
+              if [ "$(get ${p}_build)" = true ]; then act=release
+              elif [ "$release" = true ]; then act=none
+              else case "$(get $p)" in build) act=auto ;; ota) act=none; ota="$ota $p" ;; *) act=none ;; esac; fi
+              echo "$p=$act"
+              echo "::notice title=$p::$act — $(get ${p}_reason)" >&2
+            done
+            echo "ota=${ota# }"
+            echo "message=$(get message)"
             echo "ios_meta=$([ "$(get ios_metadata)" = true ] || [ "$(get ios_screenshots)" = true ] && echo true || echo false)"
             echo "ios_screenshots=$(get ios_screenshots)"
             echo "android_meta=$(get android_metadata)"
-            echo "update=false"
           fi | tee -a "$GITHUB_OUTPUT"
           # 꺼진 플랫폼은 건너뛴다
           for p in ios android; do
             on=$(python3 -c "import json;print(str(json.load(open('.expo-release.json')).get('$p',{}).get('enabled',False)).lower())")
-            [ "$on" = true ] || { echo "$p=false" >> "$GITHUB_OUTPUT"; echo "${p}_meta=false" >> "$GITHUB_OUTPUT"; }
+            [ "$on" = true ] || { echo "$p=none" >> "$GITHUB_OUTPUT"; echo "${p}_meta=false" >> "$GITHUB_OUTPUT"; }
           done
+      - name: 비밀 파일 지우기
+        if: always() && github.event_name == 'push'
+        run: . scripts/expo-release/lib.sh; c=$(cfg ci.cleanup); [ -z "$c" ] || bash -c "$c"
 
   ios:
     needs: plan
-    if: needs.plan.outputs.ios == 'true' || needs.plan.outputs.ios_meta == 'true'
+    if: needs.plan.outputs.ios != 'none' || needs.plan.outputs.ios_meta == 'true'
     runs-on: __RUNNER__
     timeout-minutes: 75
     env:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_KEY_PATH: ${{ github.workspace }}/../AuthKey.p8
+      ACT: ${{ needs.plan.outputs.ios }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -152,13 +185,26 @@ jobs:
           export_secrets
           setup=$(cfg ci.setup)
           if [ -n "$setup" ]; then bash -c "$setup"; else npm ci; fi
+          command -v fastlane >/dev/null || brew install fastlane
+      - name: 번호 정하기 (자동 빌드)
+        if: env.ACT == 'auto'
+        # app.json은 커밋하지 않는다. 승인된 버전은 트레인이 닫혀 있어 패치를 올린다.
+        run: |
+          v=$(bash scripts/expo-release/version.sh latest ios)
+          n=$(bash scripts/expo-release/version.sh next ios)
+          OUT=$RUNNER_TEMP/state fastlane ios version_state version:"$v"
+          [ "$(cat $RUNNER_TEMP/state)" = open ] || v=$(bash scripts/expo-release/version.sh bump-patch "$v")
+          bash scripts/expo-release/version.sh set "$v" --ios "$n"
       - name: fingerprint
         id: fp
-        if: needs.plan.outputs.ios == 'true'
+        if: env.ACT != 'none'
         # prebuild 전에 잰다 — OTA 쪽(prebuild 없음)과 같은 조건이어야 같은 값이 나온다
-        run: echo "hash=$(bash scripts/expo-release/fingerprint.sh hash ios)" | tee -a "$GITHUB_OUTPUT"
+        run: |
+          echo "hash=$(bash scripts/expo-release/fingerprint.sh hash ios)" | tee -a "$GITHUB_OUTPUT"
+          read -r v b _ < <(bash scripts/expo-release/version.sh get)
+          echo "tag=ios-v$v-$b" | tee -a "$GITHUB_OUTPUT"
       - name: 아카이브·업로드
-        if: needs.plan.outputs.ios == 'true'
+        if: env.ACT != 'none'
         env:
           DESTINATION: ${{ inputs.dry_run && 'export' || 'upload' }}
         run: |
@@ -167,16 +213,16 @@ jobs:
       - name: 앱 정보·스크린샷
         if: needs.plan.outputs.ios_meta == 'true'
         run: |
-          command -v fastlane >/dev/null || brew install fastlane
+          read -r v _ _ < <(bash scripts/expo-release/version.sh get)
           fastlane ios metadata screenshots:${{ needs.plan.outputs.ios_screenshots }} \
-            version:${{ needs.plan.outputs.version }} cancel_review:${{ inputs.cancel_review || false }}
+            version:"$v" cancel_review:${{ inputs.cancel_review || false }}
       - name: 태그
-        if: needs.plan.outputs.ios == 'true' && !inputs.dry_run
+        if: env.ACT != 'none' && !inputs.dry_run
         run: |
-          tag="ios-v${{ needs.plan.outputs.version }}-${{ needs.plan.outputs.ios_build_number }}"
           git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
-            tag -a "$tag" -m "fingerprint=${{ steps.fp.outputs.hash }}"
-          git push origin "$tag"
+            tag -a "${{ steps.fp.outputs.tag }}" -m "fingerprint=${{ steps.fp.outputs.hash }}"
+          git push origin "${{ steps.fp.outputs.tag }}"
+          echo "::notice title=iOS::${{ steps.fp.outputs.tag }} 업로드 ($ACT) — TestFlight 처리 후 사용 가능. 심사 제출은 App Store Connect에서."
       - name: 키·비밀 파일 지우기
         if: always()
         run: |
@@ -185,7 +231,7 @@ jobs:
 
   android:
     needs: plan
-    if: needs.plan.outputs.android == 'true' || needs.plan.outputs.android_meta == 'true'
+    if: needs.plan.outputs.android != 'none' || needs.plan.outputs.android_meta == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -194,6 +240,7 @@ jobs:
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ACT: ${{ needs.plan.outputs.android }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -216,7 +263,7 @@ jobs:
         run: |
           [ -n "$PLAY_SERVICE_ACCOUNT_JSON_B64" ] || { echo "::error::시크릿 PLAY_SERVICE_ACCOUNT_JSON_B64가 필요하다"; exit 1; }
           echo "$PLAY_SERVICE_ACCOUNT_JSON_B64" | base64 --decode > "$PLAY_JSON_KEY_PATH"; chmod 600 "$PLAY_JSON_KEY_PATH"
-          if [ "${{ needs.plan.outputs.android }}" = true ]; then
+          if [ "$ACT" != none ]; then
             [ -n "$ANDROID_KEYSTORE_B64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ] \
               || { echo "::error::시크릿 ANDROID_KEYSTORE_B64·ANDROID_KEYSTORE_PASSWORD·ANDROID_KEY_ALIAS·ANDROID_KEY_PASSWORD가 필요하다"; exit 1; }
             echo "$ANDROID_KEYSTORE_B64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"; chmod 600 "$ANDROID_KEYSTORE_PATH"
@@ -230,28 +277,40 @@ jobs:
           setup=$(cfg ci.setup)
           if [ -n "$setup" ]; then bash -c "$setup"; else npm ci; fi
           gem install fastlane --no-document
+      - name: 번호 정하기 (자동 빌드)
+        if: env.ACT == 'auto'
+        run: |
+          bash scripts/expo-release/version.sh set "$(bash scripts/expo-release/version.sh latest android)" \
+            --android "$(bash scripts/expo-release/version.sh next android)"
       - name: fingerprint
         id: fp
-        if: needs.plan.outputs.android == 'true'
-        run: echo "hash=$(bash scripts/expo-release/fingerprint.sh hash android)" | tee -a "$GITHUB_OUTPUT"
+        if: env.ACT != 'none'
+        run: |
+          echo "hash=$(bash scripts/expo-release/fingerprint.sh hash android)" | tee -a "$GITHUB_OUTPUT"
+          read -r v _ c < <(bash scripts/expo-release/version.sh get)
+          echo "tag=android-v$v-$c" | tee -a "$GITHUB_OUTPUT"
       - name: AAB 빌드
-        if: needs.plan.outputs.android == 'true'
+        if: env.ACT != 'none'
         run: bash scripts/expo-release/android-build.sh
       - name: Play 업로드
-        if: (needs.plan.outputs.android == 'true' && !inputs.dry_run) || needs.plan.outputs.android_meta == 'true'
+        if: (env.ACT != 'none' && !inputs.dry_run) || needs.plan.outputs.android_meta == 'true'
         run: |
-          aab=""
-          if [ "${{ needs.plan.outputs.android }}" = true ] && [ "${{ inputs.dry_run || false }}" != true ]; then
+          . scripts/expo-release/lib.sh
+          aab=""; extra=()
+          if [ "$ACT" != none ] && [ "${{ inputs.dry_run || false }}" != true ]; then
             aab=build/expo-release/android/app-release.aab
           fi
-          fastlane android upload aab:"$aab" metadata:${{ needs.plan.outputs.android_meta }}
+          if [ "$ACT" = auto ]; then
+            t=$(cfg auto.android_track); extra=(track:"${t:-internal}" release_status:completed)
+          fi
+          fastlane android upload aab:"$aab" metadata:${{ needs.plan.outputs.android_meta }} "${extra[@]}"
       - name: 태그
-        if: needs.plan.outputs.android == 'true' && !inputs.dry_run
+        if: env.ACT != 'none' && !inputs.dry_run
         run: |
-          tag="android-v${{ needs.plan.outputs.version }}-${{ needs.plan.outputs.android_version_code }}"
           git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
-            tag -a "$tag" -m "fingerprint=${{ steps.fp.outputs.hash }}"
-          git push origin "$tag"
+            tag -a "${{ steps.fp.outputs.tag }}" -m "fingerprint=${{ steps.fp.outputs.hash }}"
+          git push origin "${{ steps.fp.outputs.tag }}"
+          echo "::notice title=Android::${{ steps.fp.outputs.tag }} 업로드 ($ACT)"
       - name: 키·비밀 파일 지우기
         if: always()
         run: |
@@ -260,7 +319,7 @@ jobs:
 
   update:
     needs: plan
-    if: needs.plan.outputs.update == 'true'
+    if: needs.plan.outputs.ota != ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -284,10 +343,12 @@ jobs:
           if [ -n "$setup" ]; then bash -c "$setup"; else npm ci; fi
       - name: EAS Update
         env:
-          MESSAGE: ${{ inputs.message }}
+          MESSAGE: ${{ needs.plan.outputs.message }}
+          PLATFORMS: ${{ needs.plan.outputs.ota }}
         run: |
           [ -n "$MESSAGE" ] || { echo "::error::message가 필요하다"; exit 1; }
-          bash scripts/expo-release/update.sh "$MESSAGE" ${{ inputs.update_platforms }}
+          [ "$PLATFORMS" = all ] && PLATFORMS=""
+          bash scripts/expo-release/update.sh "$MESSAGE" $PLATFORMS
       - name: 비밀 파일 지우기
         if: always()
         run: . scripts/expo-release/lib.sh; c=$(cfg ci.cleanup); [ -z "$c" ] || bash -c "$c"

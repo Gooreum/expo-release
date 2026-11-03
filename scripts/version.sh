@@ -7,6 +7,9 @@
 #
 #   bash scripts/expo-release/version.sh get [커밋]          → "1.0.11 5 2"
 #   bash scripts/expo-release/version.sh set <버전> [--ios N] [--android N]
+#   bash scripts/expo-release/version.sh next <ios|android>      → 다음 빌드 번호 (태그까지 본다)
+#   bash scripts/expo-release/version.sh latest <ios|android>    → app.json·태그 중 큰 버전
+#   bash scripts/expo-release/version.sh bump-patch 1.0.11       → 1.0.12
 #
 # 쓰기는 정규식으로 그 줄만 바꾼다(들여쓰기·키 순서 유지).
 set -euo pipefail
@@ -54,6 +57,27 @@ open(path, "w").write(text)
 PY
     bash "$0" get
     ;;
+  next)
+    # 다음 빌드 번호 = max(app.json, 그 플랫폼 마지막 태그) + 1.
+    # main 머지 자동 빌드는 app.json을 커밋하지 않고 태그만 남기므로 태그가 더 클 수 있다.
+    P="${2:?ios|android}"
+    read -r _ ib ac < <(bash "$0" get)
+    cur=$([ "$P" = ios ] && echo "$ib" || echo "$ac"); [[ "$cur" =~ ^[0-9]+$ ]] || cur=0
+    git fetch -q --tags 2>/dev/null || true
+    tag=$(git tag -l "$P-v*" | sed -E 's/.*-([0-9]+)$/\1/' | sort -n | tail -1)
+    echo $(( (${tag:-0} > cur ? ${tag:-0} : cur) + 1 ))
+    ;;
+  latest)
+    # 지금 쓸 버전 = app.json과 그 플랫폼 마지막 태그 중 큰 쪽
+    P="${2:?ios|android}"
+    read -r v _ _ < <(bash "$0" get)
+    git fetch -q --tags 2>/dev/null || true
+    tv=$(git tag -l "$P-v*" | sed -E "s/^$P-v(.*)-[0-9]+$/\1/" | sort -V | tail -1)
+    printf '%s\n%s\n' "$v" "${tv:-0}" | sort -V | tail -1
+    ;;
+  bump-patch)
+    IFS=. read -r a b c <<<"${2:?버전}"; echo "${a}.${b:-0}.$(( ${c:-0} + 1 ))"
+    ;;
   *)
-    echo "사용법: version.sh get [커밋] | set <버전> [--ios N] [--android N]" >&2; exit 1 ;;
+    echo "사용법: version.sh get [커밋] | set <버전> [--ios N] [--android N] | next <플랫폼> | latest <플랫폼> | bump-patch <버전>" >&2; exit 1 ;;
 esac

@@ -68,6 +68,21 @@ platform :ios do
     true
   end
 
+  # 이 버전에 아직 빌드를 올릴 수 있는지. 승인된 버전(출시 대기·판매 중 등)은 트레인이 닫혀
+  # 같은 버전 문자열로 올리면 거부된다 → 패치를 올려야 한다. 결과를 ENV["OUT"] 파일에 open|closed로 쓴다.
+  lane :version_state do |options|
+    api_key
+    app = Spaceship::ConnectAPI::App.find(CONFIG.dig("ios", "bundle_id"))
+    UI.user_error!("App Store Connect에서 앱을 찾지 못했다") unless app
+    closed = %w[PENDING_DEVELOPER_RELEASE PROCESSING_FOR_APP_STORE PENDING_APPLE_RELEASE
+                READY_FOR_DISTRIBUTION READY_FOR_SALE REPLACED_WITH_NEW_VERSION REMOVED_FROM_SALE
+                DEVELOPER_REMOVED_FROM_SALE]
+    versions = app.get_app_store_versions(filter: { platform: "IOS", versionString: options[:version] }, limit: 5)
+    state = versions.any? { |v| closed.include?(v.app_version_state) } ? "closed" : "open"
+    UI.message("#{options[:version]}: #{versions.map(&:app_version_state).join(',').then { |s| s.empty? ? '없음' : s }} → #{state}")
+    File.write(ENV.fetch("OUT"), state)
+  end
+
   private_lane :api_key do
     app_store_connect_api_key(
       key_id: ENV.fetch("ASC_KEY_ID"),
@@ -87,9 +102,10 @@ platform :android do
     supply(
       package_name: CONFIG.dig("android", "package"),
       json_key: ENV.fetch("PLAY_JSON_KEY_PATH"),
-      track: CONFIG.dig("android", "track") || "internal",
+      # 자동 빌드(main 머지)는 track:으로 테스트 트랙을 넘긴다. 릴리스는 설정값.
+      track: options[:track] || CONFIG.dig("android", "track") || "internal",
       # completed: 그 트랙에 바로 출시(production이면 검토 제출). draft: Play Console에서 사람이 출시.
-      release_status: CONFIG.dig("android", "release_status") || "draft",
+      release_status: options[:release_status] || CONFIG.dig("android", "release_status") || "draft",
       aab: aab.to_s.empty? ? nil : aab,
       skip_upload_aab: aab.to_s.empty?,
       skip_upload_apk: true,

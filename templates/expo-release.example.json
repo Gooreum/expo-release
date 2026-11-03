@@ -7,6 +7,10 @@
     "cleanup": "rm -f .env.production GoogleService-Info.prod.plist google-services.prod.json",
     "secrets": ["ENV_PRODUCTION_B64", "GOOGLE_SERVICE_INFO_PROD_B64", "GOOGLE_SERVICES_PROD_JSON_B64"]
   },
+  "local_files": [".env.production", "GoogleService-Info.prod.plist", "google-services.prod.json"],
+  "auto": {
+    "android_track": "internal"
+  },
   "ios": {
     "enabled": true,
     "bundle_id": "com.example.app",
