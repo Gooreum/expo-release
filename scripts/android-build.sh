@@ -39,7 +39,7 @@ grep -q "applicationId '$PACKAGE'\|applicationId \"$PACKAGE\"" android/app/build
   || { echo "android/app/build.gradle의 applicationId가 $PACKAGE가 아니다 — env 확인" >&2; exit 1; }
 
 # lintVital은 CI 메모리에서 자주 죽고 릴리스 판정에 쓰지 않는다
-if ! (cd android && ./gradlew bundleRelease -x lintVitalRelease -x lintVitalAnalyzeRelease > "../$LOG" 2>&1); then
+if ! (cd android && ./gradlew bundleRelease --build-cache -x lintVitalRelease -x lintVitalAnalyzeRelease > "../$LOG" 2>&1); then
   grep -E "error:|FAILURE|What went wrong" -A3 "$LOG" | head -20 >&2 || true
   echo "Gradle 실패 — 전체 로그: $LOG" >&2; exit 1
 fi

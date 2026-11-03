@@ -234,8 +234,10 @@ jobs:
     needs: plan
     if: needs.plan.outputs.android != 'none' || needs.plan.outputs.android_meta == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
+      # 폰은 arm뿐이다 — x86·x86_64(에뮬레이터용) 네이티브 컴파일을 빼서 빌드 시간을 줄인다
+      ORG_GRADLE_PROJECT_reactNativeArchitectures: arm64-v8a,armeabi-v7a
       PLAY_JSON_KEY_PATH: ${{ github.workspace }}/../play.json
       ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/../upload.keystore
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -254,6 +256,14 @@ jobs:
         with:
           distribution: zulu
           java-version: 17
+      - name: Gradle 캐시
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: gradle-${{ runner.os }}-
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
