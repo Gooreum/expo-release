@@ -7,6 +7,8 @@ const { SourceSkips } = require('@expo/fingerprint');
 
 /** @type {import('@expo/fingerprint').Config} */
 module.exports = {
+  // eas-release.sh(EAS 대체 경로)가 빌드 때만 만드는 파일 — 없을 때와 같은 값이 나오게 뺀다
+  ignorePaths: ['eas.json', '.easignore'],
   sourceSkips:
     SourceSkips.ExpoConfigVersions |
     SourceSkips.ExpoConfigRuntimeVersionIfString |
