@@ -21,8 +21,11 @@ Expo(React Native) 앱을 App Store·Google Play에 올리고, JS만 바뀌었�
 | `scripts/expo-release/ios-build-upload.sh` | prebuild → 서명 없는 아카이브 → API 키 클라우드 서명 업로드 |
 | `scripts/expo-release/android-build.sh` | prebuild → 업로드 키 서명 AAB (debug 서명이면 멈춤) |
 | `scripts/expo-release/update.sh` | fingerprint가 같은 플랫폼만 EAS Update |
+| `scripts/expo-release/actions-quota.sh` | 이번 달 GitHub Actions 무료 분이 얼마나 남았는지 (macOS 10배) |
+| `scripts/expo-release/eas-release.sh` | Actions를 못 쓸 때 스토어 빌드를 EAS Build로 — 같은 번호·검사·태그. 이 Mac에선 네이티브 빌드 안 함 |
+| `scripts/expo-release/setup-ios-signing.sh` | EAS 대체 경로용 iOS 배포 인증서·App Store 프로필을 ASC API로 만든다 (대화형 단계 없음) |
 | `fastlane/Fastfile` | `ios metadata`(심사 대기면 철회 옵션), `android upload`(supply) |
-| `fingerprint.config.js` | 버전 번호를 fingerprint에서 뺀다 (expo-updates와 공유) |
+| `fingerprint.config.js` | 버전 번호·EAS 빌드 파일(`eas.json`·`.easignore`)을 fingerprint에서 뺀다 (expo-updates와 공유) |
 | `.github/workflows/expo-release.yml` | main 머지 자동 배포 + 릴리스 커밋 출시. 태그 `<플랫폼>-v<버전>-<빌드>`(메시지에 fingerprint) |
 
 ## 판정 규칙 (main 머지마다, 플랫폼별)

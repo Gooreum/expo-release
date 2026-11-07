@@ -28,6 +28,11 @@ iOS는 그 버전이 이미 승인돼 트레인이 닫혔으면 패치 버전을
 **스토어 출시 → 이 스킬 (사람이 정한다).** 업데이트 내용·버전·앱 정보를 정해 릴리스 커밋을 올리면
 워크플로가 출시용으로 올린다(iOS 업로드 후 심사 제출은 사람이, Android는 `android.track`·`release_status`).
 
+**GitHub Actions를 못 쓰면 → EAS로 대신 낸다.** 비공개 저장소는 Actions 무료 분이 월 2,000분(macOS는 10배)이라
+iOS 빌드 몇 번이면 바닥난다. 바닥나면 잡이 아예 시작되지 않는다. 그때는 같은 일을 이 스킬이 직접 한다
+(아래 "대체 경로"). 빌드는 Expo 서버(EAS Build 무료 플랜: 플랫폼별 월 15회)에서 돌고, 이 Mac은 올리고·받고·검사만 한다.
+**이 Mac에서 네이티브 빌드(xcodebuild·gradle)를 돌리지 않는다.**
+
 **OTA 판단은 내가 먼저 한다.** 사용자에게 "OTA로 할까요?"를 묻지 않는다. fingerprint로 판정하고 근거와 함께 알린다.
 - fingerprint가 다르면 OTA는 **불가능**하다(보내도 그 빌드는 받지 못한다). 그렇게 말하고 스토어 빌드로 간다.
 - fingerprint가 같아도 **스토어에 설명한 기능을 크게 바꾸는 변경**(새 화면·새 핵심 기능·결제 변경)은 OTA로 내보내기에 부적절하다(App Store 가이드라인 2.5.2·3.3.1).
@@ -187,6 +192,19 @@ gh run list --workflow expo-release.yml --limit 5 --json databaseId,headSha,conc
 `gh run view <id> --log | grep -E "notice|ios=|android=|ota="` → 플랫폼별 `ota / auto / none`과 이유.
 실패한 run이 있으면 원인을 먼저 보고한다.
 
+**Actions를 쓸 수 있는지 본다.**
+
+```bash
+bash scripts/expo-release/actions-quota.sh   # remaining=<분>|unlimited|unknown
+```
+
+- 다음 중 하나면 이번 출시는 **대체 경로**로 간다(묻지 않고 근거를 한 줄로 말한다):
+  - `remaining`이 필요량보다 적다 — iOS 빌드 1회 ≈ 300분(macOS 30분 × 10), Android 1회 ≈ 50분, 판정·OTA ≈ 5분
+  - 최근 run이 **시작조차 못 하고** 실패했다 — 잡에 단계가 없고 annotation에 billing·spending limit·payment가 있다
+    (`gh run view <id>`). 이런 run은 판정도 안 돌았으니, 그 머지가 내보냈어야 할 것을 0의 판정으로 다시 정한다.
+- `unknown`이면(토큰에 user 스코프 없음) Actions로 시도하고, 위의 "시작 못 함" 실패가 나면 대체 경로로 바꾼다.
+  스코프는 사람이 별도 터미널에서 `gh auth refresh -h github.com -s user`.
+
 **지금 HEAD 기준 판정**이 필요하면(머지 전 브랜치, 또는 run이 아직 없음):
 `bash scripts/expo-release/fingerprint.sh check --clean` — 임시 worktree에서 npm ci 후 잰다(몇 분 걸린다).
 로컬 작업 트리에서 바로 재면 커밋 안 한 수정·lockfile과 어긋난 node_modules 때문에 CI와 값이 달라진다.
@@ -275,6 +293,36 @@ gh run watch "$RUN" --exit-status
 - 태그가 안 생겼는데 빌드가 올라가 있으면(태그 단계 전에 실패) 직접 찍는다 — fingerprint를 꼭 넣는다(릴리스 커밋 기준 `fingerprint.sh check --clean`과 같은 조건으로 잰 hash):
   `git tag -a ios-v<버전>-<빌드> <릴리스 커밋> -m "fingerprint=<hash>" && git push origin ios-v<버전>-<빌드>`
   태그가 없으면 그 플랫폼은 다음 머지 때 OTA 대신 다시 빌드된다.
+- **시작조차 못 하고 실패**(billing·spending limit)했으면 → 아래 대체 경로로 같은 커밋을 낸다.
+
+## 대체 경로 — Actions 없이 내보내기
+
+0에서 대체 경로로 정했으면 릴리스 커밋을 푸시한 뒤(머지 후 main HEAD) 워크플로 대신 이걸 한다.
+워크플로의 plan 판정을 그대로 따른다: 출시 `release`, 자동 빌드 `auto`, OTA, 앱 정보만.
+
+| 할 일 | 명령 | 어디서 |
+|---|---|---|
+| 스토어 빌드 | `bash scripts/expo-release/eas-release.sh start <ios\|android> <release\|auto> [--meta] [--screenshots]` | EAS 서버 |
+| 기다려 검사·업로드·태그 | `bash scripts/expo-release/eas-release.sh finish <ios\|android>` — **백그라운드로** | 이 Mac은 받기·검사·업로드만 |
+| OTA | `bash scripts/expo-release/update.sh "<메시지>" [ios] [android]` (`eas whoami`가 되거나 `EXPO_TOKEN`) | EAS Update (빌드 없음) |
+| 앱 정보만 | iOS `fastlane ios metadata …`(설정 eas.asc_* 값으로 `ASC_KEY_ID`·`ASC_ISSUER_ID`·`ASC_KEY_PATH`), Android `PLAY_JSON_KEY_PATH=<eas.play_json_path> fastlane android upload metadata:true` | API 호출만 |
+
+- `start`는 임시 worktree에 그 커밋을 꺼내 `npm ci`로 fingerprint·번호를 정하고(워크플로와 같은 규칙), EAS에 큐만 넣고 끝난다.
+  무료 플랜은 대기가 길다(수십 분). `finish`는 빌드가 끝나면 결과물을 받아 워크플로와 **같은 검사**(번들 ID·버전·
+  runtimeVersion = fingerprint·업로드 키 서명·`*.verify`)를 하고, iOS는 EAS Submit, Android는 fastlane `android upload`로
+  올린 뒤 같은 태그를 찍고 worktree를 지운다. 플랫폼마다 하나씩만 진행된다(`status`, `abort`).
+- 서명만 확인하려면 `DRY_RUN=1 … finish` — 검사까지만 하고 올리지 않는다.
+- EAS 무료 빌드는 플랫폼별 월 15회다. 넘치면 EAS가 거절한다 — 그때는 다음 달 1일(Actions·EAS 둘 다 리셋)을 기다리라고 말한다.
+
+**처음 한 번 (설정 `eas`가 없거나 EAS iOS 자격증명이 없을 때)** — 무엇이 비었는지 보고 한 번에 안내한다.
+- `.expo-release.json`에 `eas`를 넣는다(경로만, 내용은 읽지 않는다):
+  `asc_app_id`, `asc_key_path`·`asc_key_id`·`asc_issuer_id`(App Store Connect API 키 — Admin 또는 App Manager),
+  `play_json_path`(Play 서비스 계정 JSON), `android_keystore`(업로드 키스토어 — 비밀번호는 `~/.gradle/gradle.properties`의
+  `android.signing_props` 이름으로 읽는다).
+- iOS 배포 인증서·프로필은 EAS 원격 자격증명이다. 사람이 별도 터미널에서 한 번:
+  `cd <저장소> && APP_ENV=prod NODE_ENV=production npx eas-cli credentials -p ios` (설정 `env`에 맞춰 — 번들 ID가 출시용으로 잡혀야 한다).
+  `eas.json`이 없으면 `{"build":{"expo-release":{}}}`만 있는 임시 파일을 만들어 두고 끝나면 지운다.
+- Android는 따로 할 것 없다 — 위 키스토어로 매번 로컬 자격증명을 만든다.
 
 ## 참고
 
@@ -284,3 +332,4 @@ gh run watch "$RUN" --exit-status
 - 자동 배포 끄기(이번 머지만): 커밋 메시지에 `[skip release]`
 - OTA 되돌리기: `npx eas-cli update:republish --group <이전 그룹 ID>` 또는 `npx eas-cli update:rollback` — 사용자 확인 후.
 - 스크립트를 고치면 이 스킬의 `scripts/`를 고치고, 각 프로젝트의 `scripts/expo-release/`로 다시 복사한다.
+- **PR CI를 만들지 않는다.** 워크플로에 `pull_request` 트리거를 넣지 않는다 — 빌드는 출시(main)할 때만 한다.

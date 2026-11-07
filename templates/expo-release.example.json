@@ -43,5 +43,14 @@
     "capture": "",
     "compose": "",
     "composer": "codex"
-  }
+  },
+  "eas": {
+    "asc_app_id": "1234567890",
+    "asc_key_path": "~/.appstoreconnect/private_keys/AuthKey_XXXXXXXXXX.p8",
+    "asc_key_id": "XXXXXXXXXX",
+    "asc_issuer_id": "00000000-0000-0000-0000-000000000000",
+    "play_json_path": "~/.config/myapp/play-sa.json",
+    "android_keystore": "~/path/to/upload.keystore"
+  },
+  "actions": { "included_minutes": 2000 }
 }
